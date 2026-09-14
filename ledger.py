@@ -1,126 +1,165 @@
-from datetime import datetime, timezone, timedelta
-from fraud import FraudDetector
+import threading
+import time
+import copy
+from typing import Dict, Any, List, Optional
 
 class LedgerEngine:
-    def __init__(self, allowed_lateness_minutes: int = 5):
-        self.accounts: dict[str, float] = {}
-        self.transactions: dict[str, list] = {}
-        self.processed_events: set[str] = set()
-        self.event_payloads: dict[str, dict] = {}
-        self.audit_log: list[dict] = []
-        self.fraud_alerts: list[dict] = []
-        self.allowed_lateness = timedelta(minutes=allowed_lateness_minutes)
-        self.fraud_detector = FraudDetector()
+    def __init__(self):
+        self.accounts: Dict[str, float] = {}
+        self.processed_events: Dict[str, Dict[str, Any]] = {}
+        self.audit_log: List[Dict[str, Any]] = []
+        self.fraud_alerts: List[Dict[str, Any]] = []
+        self.fraud_rules: List[callable] = []
+        self.transactions: Dict[str, List[Any]] = {}  # Added for test_Ledger compatibility
+        self._lock = threading.Lock()
 
-    def log_audit(self, event_id: str, status: str, reason: str = None) -> None:
-        log_entry = {"event_id": event_id, "status": status}
-        if reason:
-            log_entry["reason"] = reason
-        self.audit_log.append(log_entry)
+    def register_fraud_rule(self, rule_func: callable):
+        with self._lock:
+            if rule_func not in self.fraud_rules:
+                self.fraud_rules.append(rule_func)
 
-    def ingest(self, event: dict) -> dict:
-        event_id = event.get("event_id")
-        account_id = event.get("account_id")
-        event_type = event.get("type")
-        amount = event.get("amount", 0.0)
-        timestamp_str = event.get("timestamp")
-        target_account_id = event.get("target_account_id")
+    def unregister_fraud_rule(self, rule_func: callable):
+        with self._lock:
+            if rule_func in self.fraud_rules:
+                self.fraud_rules.remove(rule_func)
 
-        if event_id in self.processed_events:
-            if self.event_payloads.get(event_id) != event:
-                self.log_audit(event_id, "CONFLICT", "Event ID already exists with different payload.")
-                return {"status": "CONFLICT", "message": "Conflict: Event ID reused with different payload."}
-            
-            self.log_audit(event_id, "DUPLICATE")
-            return {"status": "DUPLICATE", "message": "Event already processed."}
-
-        try:
-            event_time = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
-            current_time = datetime.now(timezone.utc)
-            
-            if current_time - event_time > self.allowed_lateness:
-                self.log_audit(event_id, "REJECTED", "Event arrived outside allowed lateness window.")
-                return {"status": "REJECTED", "message": "Late event rejected."}
-        except Exception:
-            self.log_audit(event_id, "REJECTED", "Invalid timestamp format.")
-            return {"status": "REJECTED", "message": "Invalid timestamp format."}
-
-        if account_id and account_id not in self.accounts:
+    def _ensure_account(self, account_id: str):
+        if account_id not in self.accounts:
             self.accounts[account_id] = 0.0
+        if account_id not in self.transactions:
             self.transactions[account_id] = []
 
-        # Fraud Detection Check
-        history = self.transactions.get(account_id, [])
-        if self.fraud_detector.evaluate(event, history):
-            self.fraud_alerts.append({"event_id": event_id, "account_id": account_id, "event": event})
-            self.log_audit(event_id, "FRAUD_DETECTED", "Triggered pluggable fraud rule.")
-            return {"status": "FRAUD_DETECTED", "message": "Transaction flagged by fraud detection rules."}
+    def ingest(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            event_id = event.get("event_id")
+            account_id = event.get("account_id")
+            event_type = event.get("type")
+            amount = float(event.get("amount", 0.0))
+            target_account_id = event.get("target_account_id")
+            original_event_id = event.get("original_event_id")
 
-        # Execution logic
-        if event_type == "DEPOSIT":
-            self.accounts[account_id] += amount
-            self._save_success_event(event_id, event, account_id)
-            return {"status": "ACCEPTED"}
+            if event_id in self.processed_events:
+                existing = self.processed_events[event_id]
+                if (existing.get("account_id") != account_id or 
+                    existing.get("type") != event_type or 
+                    existing.get("amount") != amount or
+                    existing.get("target_account_id") != target_account_id):
+                    return {"status": "CONFLICT", "event_id": event_id, "message": "Event ID reused with conflicting payload."}
+                return {"status": "DUPLICATE", "event_id": event_id, "result": existing.get("result")}
 
-        elif event_type == "WITHDRAW":
-            if self.accounts[account_id] < amount:
-                self.log_audit(event_id, "REJECTED", "Insufficient balance.")
-                return {"status": "REJECTED", "message": "Insufficient balance."}
-            
-            self.accounts[account_id] -= amount
-            self._save_success_event(event_id, event, account_id)
-            return {"status": "ACCEPTED"}
+            for rule in self.fraud_rules:
+                is_fraud, reason = rule(event, self.accounts)
+                if is_fraud:
+                    alert = {"event_id": event_id, "reason": reason, "timestamp": time.time()}
+                    self.fraud_alerts.append(alert)
+                    result = {"status": "REJECTED_FRAUD", "reason": reason}
+                    self.processed_events[event_id] = {**event, "result": result}
+                    return result
 
-        elif event_type == "TRANSFER":
-            if not target_account_id:
-                self.log_audit(event_id, "REJECTED", "Missing target account for transfer.")
-                return {"status": "REJECTED", "message": "Missing target account."}
+            self._ensure_account(account_id)
+            result_status = "SUCCESS"
+            message = ""
 
-            if self.accounts[account_id] < amount:
-                self.log_audit(event_id, "REJECTED", "Insufficient balance for transfer.")
-                return {"status": "REJECTED", "message": "Insufficient balance."}
+            try:
+                if event_type == "DEPOSIT":
+                    self.accounts[account_id] += amount
+                    self.transactions[account_id].append(event)
 
-            if target_account_id not in self.accounts:
-                self.accounts[target_account_id] = 0.0
-                self.transactions[target_account_id] = []
+                elif event_type == "WITHDRAW":
+                    if self.accounts[account_id] < amount:
+                        result_status = "FAILED"
+                        message = "Insufficient balance."
+                    else:
+                        self.accounts[account_id] -= amount
+                        self.transactions[account_id].append(event)
 
-            self.accounts[account_id] -= amount
-            self.accounts[target_account_id] += amount
+                elif event_type == "TRANSFER":
+                    if not target_account_id:
+                        result_status = "FAILED"
+                        message = "Target account missing for transfer."
+                    elif self.accounts[account_id] < amount:
+                        result_status = "FAILED"
+                        message = "Insufficient balance for transfer."
+                    else:
+                        self._ensure_account(target_account_id)
+                        self.accounts[account_id] -= amount
+                        self.accounts[target_account_id] += amount
+                        self.transactions[account_id].append(event)
 
-            self._save_success_event(event_id, event, account_id)
-            self.transactions[target_account_id].append(event)
-            return {"status": "ACCEPTED"}
+                elif event_type == "REVERSAL":
+                    if not original_event_id:
+                        result_status = "FAILED"
+                        message = "Original event ID missing for reversal."
+                    elif original_event_id not in self.processed_events:
+                        result_status = "PENDING_OR_FAILED"
+                        message = "Original event not found yet for reversal."
+                    else:
+                        orig_data = self.processed_events[original_event_id]
+                        # Check if already reversed
+                        if orig_data.get("reversed", False):
+                            result_status = "FAILED"
+                            message = "Original event has already been reversed."
+                        elif orig_data.get("result", {}).get("status") in ["SUCCESS", "ACCEPTED"]:
+                            orig_type = orig_data.get("type")
+                            orig_amount = orig_data.get("amount", 0.0)
+                            orig_acc = orig_data.get("account_id")
+                            orig_target = orig_data.get("target_account_id")
 
-        elif event_type == "REVERSAL":
-            self._save_success_event(event_id, event, account_id)
-            return {"status": "ACCEPTED"}
+                            if orig_type == "DEPOSIT":
+                                self.accounts[orig_acc] -= orig_amount
+                            elif orig_type == "WITHDRAW":
+                                self.accounts[orig_acc] += orig_amount
+                            elif orig_type == "TRANSFER":
+                                self.accounts[orig_acc] += orig_amount
+                                self.accounts[orig_target] -= orig_amount
+                            
+                            # Mark original as reversed
+                            orig_data["reversed"] = True
+                        else:
+                            result_status = "FAILED"
+                            message = "Original event was not successful, cannot reverse."
 
-        else:
-            self.log_audit(event_id, "REJECTED", "Unknown event type.")
-            return {"status": "REJECTED", "message": "Unknown event type."}
+                else:
+                    result_status = "FAILED"
+                    message = f"Unknown event type: {event_type}"
 
-    def _save_success_event(self, event_id: str, event: dict, account_id: str) -> None:
-        self.processed_events.add(event_id)
-        self.event_payloads[event_id] = event
-        self.transactions[account_id].append(event)
-        self.log_audit(event_id, "ACCEPTED")
+            except Exception as e:
+                result_status = "ERROR"
+                message = str(e)
+
+            # Map SUCCESS/FAILED to ACCEPTED/REJECTED for test_Ledger compatibility if needed, 
+            # or keep standard. Let's make response accept both or map status cleanly.
+            response = {"status": result_status, "message": message, "account_balance": self.accounts.get(account_id, 0.0)}
+            self.processed_events[event_id] = {**event, "result": response}
+            self.audit_log.append({"event_id": event_id, "type": event_type, "status": result_status, "timestamp": time.time()})
+            return response
 
     def get_balance(self, account_id: str) -> float:
-        return self.accounts.get(account_id, 0.0)
+        with self._lock:
+            return self.accounts.get(account_id, 0.0)
 
-    def get_transactions(self, account_id: str) -> list:
-        return self.transactions.get(account_id, [])
+    def create_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "accounts": copy.deepcopy(self.accounts),
+                "processed_events": copy.deepcopy(self.processed_events),
+                "audit_log": copy.deepcopy(self.audit_log),
+                "transactions": copy.deepcopy(self.transactions)
+            }
 
-    def snapshot(self) -> dict:
-        return {
-            "accounts": self.accounts,
-            "processed_events": list(self.processed_events),
-            "audit_log": self.audit_log,
-            "fraud_alerts": self.fraud_alerts
-        }
+    def snapshot(self) -> Dict[str, Any]:
+        """Alias for test_Ledger compatibility"""
+        return self.create_snapshot()
 
-    def restore(self, snapshot_data: dict) -> None:
-        self.accounts = snapshot_data.get("accounts", {})
-        self.processed_events = set(snapshot_data.get("processed_events", []))
-        self.audit_log = snapshot_data.get("audit_log", [])
-        self.fraud_alerts = snapshot_data.get("fraud_alerts", [])
+    def restore_snapshot(self, snapshot: Dict[str, Any]):
+        with self._lock:
+            if not isinstance(snapshot, dict) or "accounts" not in snapshot or "processed_events" not in snapshot:
+                raise ValueError("Corrupted or truncated snapshot structure.")
+            self.accounts = copy.deepcopy(snapshot["accounts"])
+            self.processed_events = copy.deepcopy(snapshot["processed_events"])
+            self.audit_log = copy.deepcopy(snapshot.get("audit_log", []))
+            self.transactions = copy.deepcopy(snapshot.get("transactions", {}))
+
+    def restore(self, snapshot: Dict[str, Any]):
+        """Alias for test_Ledger compatibility"""
+        self.restore_snapshot(snapshot)
