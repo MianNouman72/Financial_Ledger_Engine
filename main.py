@@ -14,7 +14,7 @@ class TransactionRequest(BaseModel):
     transaction_id: str
     account_id: str
     amount: float = Field(..., gt=0, description="Transaction amount must be greater than zero")
-    transaction_type: str = Field(..., regex="^(DEPOSIT|WITHDRAWAL|TRANSFER)$")
+    transaction_type: str = Field(..., pattern="^(DEPOSIT|WITHDRAWAL|TRANSFER)$")
     target_account_id: Optional[str] = None
 
 class LedgerResponse(BaseModel):
