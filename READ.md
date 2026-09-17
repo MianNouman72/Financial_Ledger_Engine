@@ -1,30 +1,39 @@
-# Financial Ledger Engine 🚀
+# Financial Ledger Engine (Enterprise-Grade)
 
-A robust, thread-safe, and production-grade **Event Processing & Financial Ledger Engine** built with **FastAPI** and **Pydantic**. Designed with a focus on strict consistency, idempotency, and data atomicity for high-throughput financial transactions.
-
----
-
-## 🛠️ Core Features
-
-- **Idempotency Engine**: Prevents duplicate transaction processing by tracking event IDs.
-- **Atomic Transfers**: Ensures multi-account fund movements are completely safe—either both sides succeed or the transaction rolls back entirely.
-- **Balance Tracking & History**: Maintains precise real-time account balances and chronological transaction histories.
-- **Snapshot & Restore**: Allows checkpointing the entire system state to a JSON-compatible snapshot and restoring from it instantly for crash recovery and testing.
-- **Thread-Safe Concurrency**: Built with safe state synchronization for concurrent API requests.
+An ACID-compliant, high-integrity financial ledger engine engineered to handle strict accounting invariants, high concurrency, idempotency, and robust error handling.
 
 ---
 
-## ⚙️ Tech Stack
-
-- **Framework**: FastAPI (Python)
-- **Data Validation**: Pydantic V2
-- **Server**: Uvicorn
+## 🏗️ Architecture Overview
+The system follows a clean, modular layered architecture separating API routing, business ledger logic, fraud detection, and validation layers:
+* **API Layer (`api.py`, `main.py`)**: FastAPI-powered endpoints with strict Pydantic request/response schemas and global custom exception handling.
+* **Ledger Engine (`ledger.py`)**: Core transaction processor implementing atomic balance modifications, thread-level concurrency locking, and immutable audit logs.
+* **Fraud Prevention (`fraud.py`)**: Pluggable rule engine intercepting suspicious transactions prior to ledger commitment.
 
 ---
 
-## 🚀 Quick Start & Installation
+## 🔒 Transaction & Consistency Model
+* **Atomic Operations**: Financial entries are processed atomically to ensure partial commits never corrupt account balances.
+* **Accounting Invariants**: Strict rules prevent invalid withdrawals, negative balances (unless permitted), and malformed transfers.
+* **Reversal Semantics**: Built-in support for safe transaction reversals mapped back to original verified event IDs.
 
-1. **Clone the repository:**
-   ```bash
-   git clone [https://github.com/MianNouman72/Financial_Ledger_Engine.git](https://github.com/MianNouman72/Financial_Ledger_Engine.git)
-   cd Financial_Ledger_Engine
+---
+
+## ⚡ Concurrency Strategy
+* Uses thread-level synchronization (`threading.Lock()`) to serialize concurrent execution streams targeting shared account states.
+* Protects against race conditions during high-volume simultaneous deposits, withdrawals, and transfers.
+
+---
+
+## 🛡️ Idempotency & Error Handling
+* **Idempotency Keys**: Unique `event_id` tracking prevents duplicate request executions and network retry anomalies.
+* **Structured Errors**: Global exception catchers ensure raw stack traces or internal server details are never leaked to clients, returning clean JSON error payloads instead.
+
+---
+
+## 🧪 Testing & Verification
+The engine includes a comprehensive test suite covering unit behavior, integration boundaries, and adversarial concurrency cases.
+
+To run the test suite locally:
+```bash
+pytest -v
