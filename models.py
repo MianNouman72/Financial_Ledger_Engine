@@ -1,8 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import Optional
-from enum import strEnum
+from enum import Enum
 
-class EventType(strEnum):
+class EventType(str, Enum):
     DEPOSIT = "DEPOSIT"
     WITHDRAW = "WITHDRAW"
     TRANSFER = "TRANSFER"
