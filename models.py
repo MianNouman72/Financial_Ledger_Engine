@@ -1,35 +1,33 @@
-from datetime import datetime
-from enum import Enum
-from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
+from typing import Optional
+from enum import strEnum
 
-class EventType(str, Enum):
+class EventType(strEnum):
     DEPOSIT = "DEPOSIT"
     WITHDRAW = "WITHDRAW"
     TRANSFER = "TRANSFER"
     REVERSAL = "REVERSAL"
-    FEE = "FEE"
-
-class AuditStatus(str, Enum):
-    ACCEPTED = "ACCEPTED"
-    DUPLICATE = "DUPLICATE"
-    CONFLICT = "CONFLICT"
-    REJECTED = "REJECTED"
-    REVERSED = "REVERSED"
-    PENDING = "PENDING"
 
 class Event(BaseModel):
-    event_id: str
-    account_id: str
-    timestamp: datetime
-    type: EventType
-    amount: float
-    currency: str = "PKR"
-    target_account_id: Optional[str] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    event_id: str = Field(..., description="Unique idempotency key for the transaction", example="evt_101")
+    type: EventType = Field(..., description="Type of financial operation", example="DEPOSIT")
+    account_id: str = Field(..., description="Primary account identifier", example="acc_001")
+    amount: float = Field(..., gt=0, description="Transaction amount (must be greater than 0)", example=500.0)
+    target_account_id: Optional[str] = Field(None, description="Destination account ID (required only for TRANSFER)", example="acc_002")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "event_id": "evt_101",
+                "type": "DEPOSIT",
+                "account_id": "acc_001",
+                "amount": 500.0,
+                "target_account_id": None
+            }
+        }
 
 class AuditLogEntry(BaseModel):
-    event_id: str
-    status: AuditStatus
-    reason: Optional[str] = None
-    processed_at: datetime = Field(default_factory=datetime.utcnow)
+    event_id: str = Field(..., example="evt_101")
+    status: str = Field(..., example="SUCCESS")
+    message: str = Field(..., example="Successfully processed DEPOSIT of 500.0 for account acc_001")
+    balance_after: float = Field(..., example=1500.0)
