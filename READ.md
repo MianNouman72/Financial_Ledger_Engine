@@ -1,38 +1,44 @@
 # Financial Ledger Engine (Enterprise-Grade)
 
-An ACID-compliant, high-integrity financial ledger engine engineered to handle strict accounting invariants, high concurrency, idempotency, and robust error handling.
+An ACID-compliant, high-integrity financial ledger engine engineered to handle strict accounting invariants, high concurrency, idempotency, structured error handling, and audit-level compliance.
 
 ---
 
 ## 🏗️ Architecture Overview
-The system follows a clean, modular layered architecture separating API routing, business ledger logic, fraud detection, and validation layers:
-* **API Layer (`api.py`, `main.py`)**: FastAPI-powered endpoints with strict Pydantic request/response schemas and global custom exception handling.
-* **Ledger Engine (`ledger.py`)**: Core transaction processor implementing atomic balance modifications, thread-level concurrency locking, and immutable audit logs.
-* **Fraud Prevention (`fraud.py`)**: Pluggable rule engine intercepting suspicious transactions prior to ledger commitment.
+The system follows a clean modular structure separating API routing, core ledger logic, and data validation:
+* **API Layer (`api.py`, `main.py`)**: FastAPI endpoints with explicit HTTP status codes, structured response schemas, and custom global exception handling.
+* **Ledger Engine (`ledger.py`)**: Core processor handling strict single/double-entry rules, atomic modifications, and historical event tracking.
+* **Validation & Models (`models.py`)**: Pydantic-driven request contracts guarding against invalid amounts, negative balances, and malformed identifiers.
+
+---
+
+## 💾 Database & Storage Design
+* **In-Memory State with Snapshots**: The core engine maintains thread-safe in-memory dictionaries for accounts (`balances`, `transactions`) and idempotency tracking (`processed_events`).
+* **Persistence & Recovery**: Built-in `/snapshot` and `/restore` mechanisms allow continuous state serialization, enabling seamless backup, zero-downtime recovery, and external cold storage sync.
 
 ---
 
 ## 🔒 Transaction & Consistency Model
-* **Atomic Operations**: Financial entries are processed atomically to ensure partial commits never corrupt account balances.
-* **Accounting Invariants**: Strict rules prevent invalid withdrawals, negative balances (unless permitted), and malformed transfers.
-* **Reversal Semantics**: Built-in support for safe transaction reversals mapped back to original verified event IDs.
+* **Accounting Invariants**: Protects against unauthorized overdrafts, invalid withdrawals, and balance mismatches during transfers.
+* **Atomic Execution**: Operations either fully commit across source and destination accounts or safely abort without leaving orphan records.
+* **Reversal Semantics**: Safe transactional reversals mapped directly back to verified historical `event_id` keys.
 
 ---
 
 ## ⚡ Concurrency Strategy
-* Uses thread-level synchronization (`threading.Lock()`) to serialize concurrent execution streams targeting shared account states.
-* Protects against race conditions during high-volume simultaneous deposits, withdrawals, and transfers.
+* Implements thread-level synchronization via `threading.Lock()` to serialize concurrent execution streams targeting shared account states.
+* Completely mitigates race conditions during high-volume simultaneous thread executions.
 
 ---
 
-## 🛡️ Idempotency & Error Handling
-* **Idempotency Keys**: Unique `event_id` tracking prevents duplicate request executions and network retry anomalies.
-* **Structured Errors**: Global exception catchers ensure raw stack traces or internal server details are never leaked to clients, returning clean JSON error payloads instead.
+## 🛡️ Idempotency & Error-Handling Strategy
+* **Idempotency Keys**: Unique `event_id` checks prevent duplicate request processing caused by network retries.
+* **Safe Error Propagation**: Global exception catchers intercept raw stack traces, returning sanitized, structured JSON error payloads (`400`, `422`, `409`) to clients.
 
 ---
 
 ## 🧪 Testing & Verification
-The engine includes a comprehensive test suite covering unit behavior, integration boundaries, and adversarial concurrency cases.
+The engine includes a robust test suite covering unit logic, integration boundaries, and adversarial concurrency scenarios.
 
 To run the test suite locally:
 ```bash
